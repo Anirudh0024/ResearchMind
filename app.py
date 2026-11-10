@@ -1,11 +1,7 @@
 import streamlit as st
 
-from agents import (
-    built_reader_agent,
-    built_search_agent,
-    writer_chain,
-    critic_chain,
-)
+from agents import writer_chain, critic_chain
+from tools import search_web, scrape_webpage
 
 # ==========================================
 # PAGE CONFIGURATION
@@ -27,10 +23,6 @@ st.markdown(
     """
 <style>
 
-/* -----------------------------------------
-   COLOR VARIABLES
------------------------------------------ */
-
 :root {
     --bg: #F5F7F5;
     --surface: #FFFFFF;
@@ -42,9 +34,7 @@ st.markdown(
     --soft: #EAF1EC;
 }
 
-/* -----------------------------------------
-   GLOBAL LIGHT THEME
------------------------------------------ */
+/* GLOBAL LIGHT THEME */
 
 html, body, .stApp,
 [data-testid="stAppViewContainer"],
@@ -60,7 +50,7 @@ html, body, .stApp,
     padding-bottom: 3rem;
 }
 
-/* Header and toolbar */
+/* HEADER */
 
 [data-testid="stHeader"],
 [data-testid="stToolbar"],
@@ -68,9 +58,7 @@ html, body, .stApp,
     background-color: var(--bg) !important;
 }
 
-/* -----------------------------------------
-   TYPOGRAPHY
------------------------------------------ */
+/* TYPOGRAPHY */
 
 h1, h2, h3, h4 {
     color: var(--text) !important;
@@ -81,9 +69,7 @@ p, label {
     color: var(--muted);
 }
 
-/* -----------------------------------------
-   SIDEBAR
------------------------------------------ */
+/* SIDEBAR */
 
 [data-testid="stSidebar"],
 [data-testid="stSidebarContent"] {
@@ -103,9 +89,7 @@ p, label {
     color: var(--text) !important;
 }
 
-/* -----------------------------------------
-   HERO SECTION
------------------------------------------ */
+/* HERO */
 
 .hero {
     padding: 35px;
@@ -129,9 +113,7 @@ p, label {
     line-height: 1.7;
 }
 
-/* -----------------------------------------
-   INPUT FIELDS
------------------------------------------ */
+/* INPUT */
 
 .stTextInput input {
     background-color: #FFFFFF !important;
@@ -151,11 +133,7 @@ p, label {
     box-shadow: 0 0 0 1px var(--primary) !important;
 }
 
-/* -----------------------------------------
-   BUTTONS
------------------------------------------ */
-
-/* Primary buttons */
+/* PRIMARY BUTTONS */
 
 .stFormSubmitButton button,
 button[kind="primary"] {
@@ -174,7 +152,7 @@ button[kind="primary"]:hover {
     color: #FFFFFF !important;
 }
 
-/* Secondary buttons including Clear Results */
+/* SECONDARY BUTTONS */
 
 [data-testid="stSidebar"] button,
 .stButton button[kind="secondary"] {
@@ -193,7 +171,7 @@ button[kind="primary"]:hover {
     border-color: var(--primary) !important;
 }
 
-/* Download button */
+/* DOWNLOAD BUTTON */
 
 .stDownloadButton button {
     background-color: var(--primary) !important;
@@ -204,9 +182,7 @@ button[kind="primary"]:hover {
     min-height: 44px;
 }
 
-/* -----------------------------------------
-   AGENT CARDS
------------------------------------------ */
+/* AGENT CARDS */
 
 .agent-card {
     background-color: #FFFFFF;
@@ -239,9 +215,7 @@ button[kind="primary"]:hover {
     margin-top: 5px;
 }
 
-/* -----------------------------------------
-   TABS
------------------------------------------ */
+/* TABS */
 
 .stTabs [data-baseweb="tab-list"] {
     gap: 18px;
@@ -258,9 +232,7 @@ button[kind="primary"]:hover {
     color: var(--primary) !important;
 }
 
-/* -----------------------------------------
-   STATUS CONTAINER
------------------------------------------ */
+/* STATUS */
 
 [data-testid="stStatusWidget"] {
     background-color: #FFFFFF !important;
@@ -269,9 +241,7 @@ button[kind="primary"]:hover {
     border-radius: 12px;
 }
 
-/* -----------------------------------------
-   DIVIDERS AND FOOTER
------------------------------------------ */
+/* DIVIDERS */
 
 hr {
     border-color: var(--border) !important;
@@ -281,7 +251,6 @@ footer {
     background-color: var(--bg) !important;
 }
 
-/* Hide Streamlit menu */
 #MainMenu {
     visibility: hidden;
 }
@@ -307,6 +276,7 @@ def to_text(content):
         parts = []
 
         for block in content:
+
             if isinstance(block, str):
                 parts.append(block)
 
@@ -343,79 +313,135 @@ def run_pipeline_with_progress(topic):
 
     with st.status("ResearchMind is working...", expanded=True) as status:
 
-        # STEP 1: SEARCH AGENT
+        # ==================================
+        # STEP 1: SEARCH
+        # ==================================
 
         st.write("🔎 **Step 1/4 — Searching the web**")
 
-        search_agent = built_search_agent()
+        search_results = search_web(topic, max_results=3)
 
-        search_result = search_agent.invoke(
-            {
-                "messages": [
+        if not search_results:
+            raise ValueError("No search results found. Try another topic.")
+
+        search_text = []
+
+        for index, result in enumerate(search_results, start=1):
+
+            title = result.get("title", "Untitled")
+            url = result.get("url", "")
+            snippet = result.get("content", "")
+
+            search_text.append(
+                f"### Source {index}: {title}\n" f"URL: {url}\n" f"Snippet: {snippet}\n"
+            )
+
+        state["search_result"] = "\n".join(search_text)
+
+        st.write(f"✓ Found {len(search_results)} search results")
+
+        # ==================================
+        # STEP 2: READER
+        # ==================================
+
+        st.write("📖 **Step 2/4 — Reading webpages**")
+
+        scraped_text = []
+        valid_sources = []
+
+        for index, result in enumerate(search_results, start=1):
+
+            url = result.get("url", "")
+            title = result.get("title", "Untitled")
+
+            if not url:
+                continue
+
+            with st.spinner(f"Reading source {index}/{len(search_results)}..."):
+
+                content = scrape_webpage(url)
+
+            if (
+                content
+                and not content.startswith(
                     (
-                        "user",
-                        f"Find recent, reliable and detailed information about: {topic}",
+                        "Could not scrape",
+                        "Scraping failed",
+                        "Invalid URL",
                     )
-                ]
-            }
+                )
+                and content != "No readable content found."
+            ):
+
+                valid_sources.append(url)
+
+                scraped_text.append(
+                    f"### {title}\n"
+                    f"Source URL: {url}\n"
+                    f"Extracted Content:\n{content[:3500]}\n"
+                )
+
+                st.write(f"✓ Source {index} extracted")
+
+            else:
+
+                st.warning(f"Could not extract content from source {index}.")
+
+        if not scraped_text:
+
+            raise ValueError(
+                "Could not scrape any webpages. " "Try another research topic."
+            )
+
+        state["scraped_content"] = "\n\n".join(scraped_text)
+
+        state["sources"] = valid_sources
+
+        st.write(f"✓ Successfully read {len(valid_sources)} webpages")
+
+        # ==================================
+        # STEP 3: WRITER
+        # ==================================
+
+        st.write("✍️ **Step 3/4 — Writing research report**")
+
+        research_combined = (
+            f"SEARCH RESULTS:\n"
+            f"{state['search_result']}\n\n"
+            f"DETAILED SCRAPED CONTENT:\n"
+            f"{state['scraped_content']}"
         )
 
-        state["search_result"] = to_text(search_result["messages"][-1].content)
+        with st.spinner("Writer is generating your research report..."):
 
-        st.write("✓ Search completed")
-
-        # STEP 2: READER AGENT
-
-        st.write("📖 **Step 2/4 — Reading relevant sources**")
-
-        reader_agent = built_reader_agent()
-
-        reader_result = reader_agent.invoke(
-            {
-                "messages": [
-                    (
-                        "user",
-                        f"Based on these search results about '{topic}', "
-                        f"select the most relevant URL and scrape it.\n\n"
-                        f"Search Results:\n{state['search_result'][:800]}",
-                    )
-                ]
-            }
-        )
-
-        state["scraped_content"] = to_text(reader_result["messages"][-1].content)
-
-        st.write("✓ Reading completed")
-
-        # STEP 3: WRITER AGENT
-
-        st.write("✍️ **Step 3/4 — Generating research report**")
-
-        research = (
-            f"SEARCH RESULTS:\n{state['search_result']}\n\n"
-            f"SCRAPED CONTENT:\n{state['scraped_content']}"
-        )
-
-        report_result = writer_chain.invoke(
-            {
-                "topic": topic,
-                "research": research,
-            }
-        )
+            report_result = writer_chain.invoke(
+                {
+                    "topic": topic,
+                    "research": research_combined,
+                }
+            )
 
         state["report"] = to_text(report_result)
 
-        st.write("✓ Report generated")
+        st.write("✓ Research report generated")
 
-        # STEP 4: CRITIC AGENT
+        # ==================================
+        # STEP 4: CRITIC
+        # ==================================
 
         st.write("🧐 **Step 4/4 — Reviewing report quality**")
 
-        feedback_result = critic_chain.invoke({"report": state["report"]})
+        with st.spinner("Critic is evaluating your report..."):
+
+            feedback_result = critic_chain.invoke({"report": state["report"]})
 
         state["feedback"] = to_text(feedback_result)
 
-        st.write("✓ Review completed")
+        st.write("✓ Critic review completed")
+
+        # ==================================
+        # COMPLETION
+        # ==================================
 
         status.update(
             label="Research completed successfully!",
@@ -465,9 +491,7 @@ with st.sidebar:
 
     st.markdown("### BUILT WITH")
 
-    st.caption("""
-    Python · LangChain · Groq · Tavily · Streamlit
-    """)
+    st.caption("Python · LangChain · Groq · Tavily · Streamlit")
 
     st.divider()
 
@@ -554,11 +578,26 @@ if submitted:
 
         except Exception as error:
 
-            st.session_state.result = None
+            error_message = str(error).lower()
 
             st.error("Research pipeline failed.")
 
-            st.exception(error)
+            if (
+                "429" in error_message
+                or "rate_limit" in error_message
+                or "rate limit" in error_message
+            ):
+
+                st.warning(
+                    "Groq API rate limit reached. "
+                    "Your research pipeline uses two LLM stages: "
+                    "Writer and Critic. Please wait for your "
+                    "token limit to reset or reduce the report size."
+                )
+
+            else:
+
+                st.error(str(error))
 
 
 # ==========================================
@@ -584,18 +623,18 @@ if not st.session_state.result:
 
             st.markdown(
                 f"""
-            <div class="agent-card">
+                <div class="agent-card">
 
-                <div class="agent-icon">{icon}</div>
+                    <div class="agent-icon">{icon}</div>
 
-                <div class="agent-title">{name}</div>
+                    <div class="agent-title">{name}</div>
 
-                <div class="agent-description">
-                    {description}
+                    <div class="agent-description">
+                        {description}
+                    </div>
+
                 </div>
-
-            </div>
-            """,
+                """,
                 unsafe_allow_html=True,
             )
 
@@ -658,6 +697,16 @@ if result:
     with tab_reader:
 
         st.markdown(result["scraped_content"])
+
+        if result.get("sources"):
+
+            st.divider()
+
+            st.markdown("### Sources")
+
+            for index, url in enumerate(result["sources"], start=1):
+
+                st.markdown(f"{index}. [{url}]({url})")
 
 
 # ==========================================
